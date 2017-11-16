@@ -1,0 +1,122 @@
+#!/usr/bin/perl
+use strict;
+use File::Find;
+use File::Basename;
+
+$|=1;
+sub csv;
+
+my ($totalfile, $summaryfile)=('total.txt','summary.csv');
+unlink $totalfile, $summaryfile;
+open F, ">$summaryfile";
+csv *F, "Страница","Заголовок","Публикаций","Уник","Прочих","Уник","Всех","Уник";
+close F;
+ 
+my @tld;
+#my $tld=`curl -s http://data.iana.org/TLD/tlds-alpha-by-domain.txt`;
+#$tld=~s/^#.*$//gm;
+#@tld=map {lc $_}grep {$_} split /\s/ms, $tld;
+
+@tld=qw/ai am au be biz br by bz ca cat cc ch cm cn co com cz de dk edu ee es eu fi fm fr gl gov il in info int io ir it jp kz lv ly md me media net nl nu org pro pub ru sh sk su to tv ua uk wiki ws/;
+my @pub=qw/ncbi.nlm.nih.gov ajcn.nutrition.org sciencedirect.com onlinelibrary.wiley.com nature.com sci-hub.cc link.springer.com cell.com journals.cambridge.org journals.plos.org cyberleninka.ru jama.jamanetwork.com link.springer.com.sci-hub.org biomedcentral.com advan.physiology.org neurology.org circ.ahajournals.org nejm.org nutritionandmetabolism.com hindawi.com pnas.org jasn.asnjournals.org jbc.org ajpheart.physiology.org europepmc.org archinte.jamanetwork.com fasebj.org cancer.gov journals.lww.com science.sciencemag.org ang.sagepub.com m.ajpheart.physiology.org cancerres.aacrjournals.org cdc.gov nlm.nih.gov mdpi.com nps.org.au jcmtjournal.com jle.com biosignaling.biomedcentral.com hyper.ahajournals.org/;
+
+my $total={file=>'Всего'};
+find( {wanted => sub {
+	return unless -f $File::Find::name;
+	process_file($File::Find::name);
+
+}, no_chdir => 1}, 'nestarenie.ru');
+
+print join( " ",sort keys %{$total->{tld}}),"\n";
+
+print_stats($total);
+print_row($total);
+
+sub process_file
+{
+	my $file=shift;
+	print "$file ";
+	open F,$file;
+	my $page={stat=>{file=>$file},comments_flag=>0};
+	my @urls;
+	while(<F>)
+	{
+		my $line=$_;
+		$page->{stat}->{title}=$1 if $line=~m'<title>(.*?)</title>'i;
+		$page->{stat}->{title}=~s/ &#8212; .*//;
+		$page->{comments_flag}=1 if $line=~/wrapper-form-comments/;
+		
+		my @u;
+		push @u, ($line=~m"([a-z0-9\./?&=\-#:_]+\.$_\b[a-z0-9\./?&=\-_#]+)"gsmi) foreach @tld;
+		push @urls,{url=>$_,comment=>$page->{comments_flag}} foreach grep {!/nestarenie.ru/i} @u;
+		print "." unless $page->{lines}++%100;
+	};
+	print "\n";
+	close F;
+	foreach my $u (@urls)
+	{
+		$u->{host}=lc $1 if $u->{url}=~m'^(.*?)/';
+		$u->{host}=lc $1 if $u->{url}=~m'//(.*?)/';
+		$u->{host}=~s/^[:_-]//;
+		$u->{host}=~s/^www\.//;
+		$u->{tld}=$1 if $u->{host}=~m'\.([^.]+)$';
+		$u->{id}=$u->{url};
+		$u->{id}="PMID$1" if $u->{url}=~m'.nih.gov/pubmed/(\d+)';
+		$u->{id}="PMC$1" if $u->{url}=~m'nih.gov/pmc/articles/PMC(\d+)';
+		$u->{id}="PII$1" if $u->{url}=~m'sciencedirect.com/science/article/pii/(\w+)';
+
+		foreach my $s ($total,$page->{stat})
+		{
+			$s->{all_links}++;
+			$s->{all_links_unique}->{$u->{id}}++;
+			$s->{by_host}->{$u->{host}}++;
+			$s->{by_host_unique}->{$u->{host}}->{$u->{id}}++;
+			if (grep {$_ eq $u->{host}} @pub)
+			{
+				$s->{pub_links}++;
+				$s->{pub_links_unique}->{$u->{id}}++;
+				$s->{pub_pages}->{$file}++;
+			}
+			else
+			{
+				$s->{other_links}++;
+				$s->{other_links_unique}->{$u->{id}}++;
+			};
+		};
+		$total->{tld}->{$u->{tld}}++;
+	};
+	$total->{all_pages}++ if @urls;
+	print_row($page->{stat});
+}
+
+sub print_stats
+{
+	my $s=shift;
+	open F, ">$totalfile";
+	printf F "Всего страниц $s->{all_pages}, с публикациями %d\n", scalar(keys %{$s->{pub_pages}});
+	print F "Всего ссылок $s->{all_links}, публикаций $s->{pub_links}, прочих $s->{other_links}\n";
+	printf F "Всего уникальных %d, публикаций %d, прочих %d\n",scalar(keys %{$s->{all_links_unique}}),scalar(keys %{$s->{pub_links_unique}}),scalar(keys %{$s->{other_links_unique}});
+	print F "По хостам, всего, уникальных:\n";
+	printf F "$_ $s->{by_host}->{$_} %d\n", scalar(keys %{$s->{by_host_unique}->{$_}}) foreach sort {$s->{by_host}->{$b}<=>$s->{by_host}->{$a}} keys %{$s->{by_host}};
+	close F;
+}
+
+sub print_row
+{
+	my $s=shift;
+	open F, ">>$summaryfile";
+	csv *F, $s->{file},$s->{title},0+$s->{pub_links},scalar(keys %{$s->{pub_links_unique}}),0+$s->{other_links},scalar(keys %{$s->{other_links_unique}}),0+$s->{all_links},scalar(keys %{$s->{all_links_unique}});
+	close F;
+
+}
+
+sub csv($)
+{
+	use Encode;
+	my @row=@_;
+	my $fh=shift @row;
+	s/"/""/g foreach @row;
+	/[;"]/ and $_=qq{"$_"} foreach @row;
+	$_=encode("cp1251",decode("utf8",$_)) foreach @row;
+	print {$fh} join (';',@row),"\n";
+}
